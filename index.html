@@ -146,6 +146,11 @@ main{flex:1;position:relative;min-height:0}
 .ph .pb::before{left:0;border-left:0}
 .ph .pb::after{right:0;border-right:0}
 .ph .pp{position:absolute;left:0;top:0;height:8px;background:rgba(0,0,0,.3);border-radius:3px 0 0 0}
+#zoomCtl{position:absolute;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));z-index:8;display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);overflow:hidden}
+#zoomCtl button{width:44px;height:44px;display:grid;place-items:center;color:var(--ink)}
+#zoomCtl button+button{border-top:1px solid var(--line)}
+#zoomCtl button:hover{background:var(--hover)}
+#zoomCtl button:disabled{opacity:.3}
 #dragTip{position:fixed;z-index:50;background:var(--ink);color:var(--panel);font-size:12px;font-weight:700;padding:5px 9px;border-radius:7px;pointer-events:none;display:none;white-space:nowrap;transform:translate(-50%,-100%)}
 
 .empty{position:absolute;inset:0;display:grid;place-items:center;padding:24px;z-index:10;pointer-events:none}
@@ -252,6 +257,10 @@ input[type=date].inp{padding:0 6px;font-size:14px}
       </div>
     </div>
   </div>
+  <div id="zoomCtl" aria-label="Zoom">
+    <button id="zIn" aria-label="Acercar" title="Acercar (+)"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+    <button id="zOut" aria-label="Alejar" title="Alejar (−)"><svg class="i" viewBox="0 0 24 24"><path d="M5 12h14"/></svg></button>
+  </div>
   <div id="emptyState" class="empty" style="display:none">
     <div class="card">
       <h2>Tus diagramas de Gantt</h2>
@@ -332,7 +341,7 @@ const CLIENT = rid('c');
 
 // ---------- state ----------
 const projects = new Map();
-let ui = Object.assign({ current:null, zoom:'day', leftHidden:false, autoShift:true }, LS.get('ui', {}));
+let ui = Object.assign({ current:null, zoom:'day', zf:1, leftHidden:false, autoShift:true }, LS.get('ui', {}));
 let sel = null;            // selected task id
 let editId = null, editSnap = null;
 const undoS = {}, redoS = {};
@@ -652,6 +661,7 @@ function blockedPreds(p, id){
 function pushUndo(prev){
   const id = ui.current; (undoS[id] ||= []).push(prev); if (undoS[id].length > 60) undoS[id].shift(); redoS[id] = [];
   updUndo();
+  if (cur()) { const i = zIndex(); $('#zIn').disabled = i >= ZSTEPS.length - 1; $('#zOut').disabled = i <= 0; }
 }
 function updUndo(){ const id = ui.current; $('#btnUndo').disabled = !(undoS[id]||[]).length; $('#btnRedo').disabled = !(redoS[id]||[]).length; }
 function undo(){ step(undoS, redoS); }
@@ -674,7 +684,7 @@ function layout(p){
   const RH = coarse ? 44 : 38, HH = 54;
   const cols = W >= 1000 ? 'full' : W >= 640 ? 'mid' : 'min';
   const LW = ui.leftHidden ? 0 : cols === 'full' ? 360 : cols === 'mid' ? 240 : 132;
-  const ppd = { day: W < 640 ? 30 : 34, week: W < 640 ? 9 : 11, month: W < 640 ? 2.6 : 3.4 }[ui.zoom];
+  const ppd = { day: W < 640 ? 30 : 34, week: W < 640 ? 9 : 11, month: W < 640 ? 2.6 : 3.4 }[ui.zoom] * (ui.zf || 1);
   const rows = rowsOf(p);
   const S = computeSpans(p);
   const tn = todayN();
@@ -682,7 +692,7 @@ function layout(p){
   for (const t of p.tasks){ const [x,y] = S.get(t.id); a = Math.min(a,x); b = Math.max(b,y); }
   const pad = { day:[4,21], week:[10,49], month:[20,90] }[ui.zoom];
   a -= pad[0]; b += pad[1];
-  const minDays = Math.ceil(Math.max(0, scroller.clientWidth - LW) / ppd) + 2;
+  const minDays = Math.ceil(Math.max(0, scroller.clientWidth - LW) / ppd) + 12;
   if (b - a + 1 < minDays) b = a + minDays - 1;
   if (ui.zoom === 'week'){ const dow = (dt(a).getUTCDay() + 6) % 7; a -= dow; const dw = (dt(b).getUTCDay() + 6) % 7; b += 6 - dw; }
   if (ui.zoom === 'month'){ const d = dt(a); a = Math.round(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)/DAY); const e = dt(b); b = Math.round(Date.UTC(e.getUTCFullYear(), e.getUTCMonth()+1, 1)/DAY) - 1; }
@@ -722,6 +732,7 @@ function renderHeader(){
 function renderChart(keepScroll){
   const p = cur();
   $('#emptyState').style.display = p ? 'none' : '';
+  $('#zoomCtl').style.display = p ? '' : 'none';
   $('#sheet').style.display = p ? '' : 'none';
   if (!p) { L = null; return; }
   const prev = L;
@@ -1122,12 +1133,32 @@ $('#moreMenu').addEventListener('click', e => {
 // ---------- header controls ----------
 $('#projName').addEventListener('change', e => { const p = cur(); if (!p) return; p.name = e.target.value.trim().slice(0,120) || 'Proyecto'; e.target.value = p.name; saveProject(p); renderHeader(); });
 $('#projName').addEventListener('keydown', e => { if (e.key === 'Enter') e.target.blur(); });
-$('#zoom').addEventListener('click', e => {
-  const b = e.target.closest('[data-z]'); if (!b || !L) return;
+// zoom: discrete steps from far (months) to close (days)
+const ZSTEPS = [['month',.6],['month',1],['month',1.6],['week',.75],['week',1],['week',1.5],['day',.65],['day',1],['day',1.5],['day',2.2]];
+function setZoom(view, f){
+  if (!L || !cur()) return;
   const center = L.rStart + (scroller.scrollLeft + (scroller.clientWidth - L.LW) / 2) / L.ppd;
-  ui.zoom = b.dataset.z; saveUI(); renderHeader(); renderChart(false);
+  ui.zoom = view; ui.zf = f; saveUI(); renderHeader(); renderChart(false);
   scrollToDay(center, .5);
-});
+  const i = zIndex(); $('#zIn').disabled = i >= ZSTEPS.length - 1; $('#zOut').disabled = i <= 0;
+}
+function zIndex(){
+  let best = 0, d = Infinity;
+  ZSTEPS.forEach(([v, f], i) => { if (v === ui.zoom && Math.abs(f - (ui.zf || 1)) < d) { d = Math.abs(f - (ui.zf || 1)); best = i; } });
+  return best;
+}
+function zoomStep(dir){ const i = Math.max(0, Math.min(ZSTEPS.length - 1, zIndex() + dir)); const [v, f] = ZSTEPS[i]; setZoom(v, f); }
+$('#zoom').addEventListener('click', e => { const b = e.target.closest('[data-z]'); if (b) setZoom(b.dataset.z, 1); });
+$('#zIn').addEventListener('click', () => zoomStep(1));
+$('#zOut').addEventListener('click', () => zoomStep(-1));
+// trackpad pinch / Ctrl+rueda
+let wheelAcc = 0, wheelT = 0;
+scroller.addEventListener('wheel', e => {
+  if (!e.ctrlKey && !e.metaKey) return;
+  e.preventDefault(); wheelAcc += e.deltaY;
+  const now = Date.now(); if (Math.abs(wheelAcc) < 40 || now - wheelT < 180) return;
+  wheelT = now; zoomStep(wheelAcc < 0 ? 1 : -1); wheelAcc = 0;
+}, { passive: false });
 $('#btnToday').addEventListener('click', () => scrollToDay(todayN(), .3));
 $('#btnAdd').addEventListener('click', () => addTask('task'));
 $('#btnUndo').addEventListener('click', undo);
@@ -1143,6 +1174,10 @@ document.addEventListener('keydown', e => {
   const inField = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName || '');
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && !inField){ e.preventDefault(); e.shiftKey ? redo() : undo(); }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'y' && !inField){ e.preventDefault(); redo(); }
+  if (!inField && !e.metaKey && !e.ctrlKey && !e.altKey && !$('#modal').classList.contains('on')){
+    if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomStep(1); return; }
+    if (e.key === '-' || e.key === '_') { e.preventDefault(); zoomStep(-1); return; }
+  }
   if (e.key === 'Escape'){ if ($('#modal').classList.contains('on')) closeModal(); else if (editId){ closeEditor(); } closeMore(); closeDrawer(); }
 });
 let rzT; window.addEventListener('resize', () => { clearTimeout(rzT); rzT = setTimeout(() => renderChart(false), 120); });
