@@ -151,6 +151,9 @@ main{flex:1;position:relative;min-height:0}
 #zoomCtl button+button{border-top:1px solid var(--line)}
 #zoomCtl button:hover{background:var(--hover)}
 #zoomCtl button:disabled{opacity:.3}
+body.hand #scroller, body.hand #scroller *{cursor:grab !important}
+body.panning #scroller, body.panning #scroller *{cursor:grabbing !important}
+body.hand #bars, body.hand #left{-webkit-user-select:none;user-select:none}
 #dragTip{position:fixed;z-index:50;background:var(--ink);color:var(--panel);font-size:12px;font-weight:700;padding:5px 9px;border-radius:7px;pointer-events:none;display:none;white-space:nowrap;transform:translate(-50%,-100%)}
 
 .empty{position:absolute;inset:0;display:grid;place-items:center;padding:24px;z-index:10;pointer-events:none}
@@ -1135,11 +1138,14 @@ $('#projName').addEventListener('change', e => { const p = cur(); if (!p) return
 $('#projName').addEventListener('keydown', e => { if (e.key === 'Enter') e.target.blur(); });
 // zoom: discrete steps from far (months) to close (days)
 const ZSTEPS = [['month',.6],['month',1],['month',1.6],['week',.75],['week',1],['week',1.5],['day',.65],['day',1],['day',1.5],['day',2.2]];
-function setZoom(view, f){
+function setZoom(view, f, clientX){
   if (!L || !cur()) return;
-  const center = L.rStart + (scroller.scrollLeft + (scroller.clientWidth - L.LW) / 2) / L.ppd;
+  const rect = scroller.getBoundingClientRect();
+  // keep the day under the mouse (or the centre) in the same place on screen
+  const vx = clientX != null ? Math.max(0, clientX - rect.left - L.LW) : (scroller.clientWidth - L.LW) / 2;
+  const day = L.rStart + (scroller.scrollLeft + vx) / L.ppd;
   ui.zoom = view; ui.zf = f; saveUI(); renderHeader(); renderChart(false);
-  scrollToDay(center, .5);
+  scroller.scrollLeft = Math.max(0, (day - L.rStart) * L.ppd - vx);
   const i = zIndex(); $('#zIn').disabled = i >= ZSTEPS.length - 1; $('#zOut').disabled = i <= 0;
 }
 function zIndex(){
@@ -1147,18 +1153,53 @@ function zIndex(){
   ZSTEPS.forEach(([v, f], i) => { if (v === ui.zoom && Math.abs(f - (ui.zf || 1)) < d) { d = Math.abs(f - (ui.zf || 1)); best = i; } });
   return best;
 }
-function zoomStep(dir){ const i = Math.max(0, Math.min(ZSTEPS.length - 1, zIndex() + dir)); const [v, f] = ZSTEPS[i]; setZoom(v, f); }
+function zoomStep(dir, clientX){ const j = zIndex(), i = Math.max(0, Math.min(ZSTEPS.length - 1, j + dir)); if (i === j) return; const [v, f] = ZSTEPS[i]; setZoom(v, f, clientX); }
 $('#zoom').addEventListener('click', e => { const b = e.target.closest('[data-z]'); if (b) setZoom(b.dataset.z, 1); });
 $('#zIn').addEventListener('click', () => zoomStep(1));
 $('#zOut').addEventListener('click', () => zoomStep(-1));
-// trackpad pinch / Ctrl+rueda
+// Shift + rueda (delante = acercar), y pellizco de trackpad / Ctrl + rueda
 let wheelAcc = 0, wheelT = 0;
 scroller.addEventListener('wheel', e => {
-  if (!e.ctrlKey && !e.metaKey) return;
-  e.preventDefault(); wheelAcc += e.deltaY;
-  const now = Date.now(); if (Math.abs(wheelAcc) < 40 || now - wheelT < 180) return;
-  wheelT = now; zoomStep(wheelAcc < 0 ? 1 : -1); wheelAcc = 0;
+  if (!e.shiftKey && !e.ctrlKey && !e.metaKey) return;
+  e.preventDefault();
+  // with Shift, Chrome/Edge/Safari report the wheel as horizontal (deltaX)
+  const d = e.shiftKey && !e.ctrlKey && !e.metaKey ? (e.deltaY || e.deltaX) : e.deltaY;
+  wheelAcc += d;
+  const now = Date.now();
+  if (Math.abs(wheelAcc) < 30 || now - wheelT < 110) return;
+  wheelT = now; zoomStep(wheelAcc < 0 ? 1 : -1, e.clientX); wheelAcc = 0;
 }, { passive: false });
+
+// Mano (barra espaciadora + arrastrar, o botón central del ratón), como en Photoshop
+let spaceDown = false, pan = null;
+const isField = () => /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName || '') || document.activeElement?.isContentEditable;
+function setHand(){ document.body.classList.toggle('hand', spaceDown || !!pan); document.body.classList.toggle('panning', !!pan); }
+window.addEventListener('keydown', e => {
+  if (e.code !== 'Space' || isField() || $('#modal').classList.contains('on')) return;
+  e.preventDefault();
+  if (!spaceDown) { spaceDown = true; setHand(); }
+});
+window.addEventListener('keyup', e => { if (e.code === 'Space') { spaceDown = false; setHand(); } });
+window.addEventListener('blur', () => { spaceDown = false; pan = null; setHand(); });
+scroller.addEventListener('pointerdown', e => {
+  if (!(spaceDown && e.button === 0) && e.button !== 1) return;
+  if (e.target.closest('#left') && !spaceDown) return;
+  e.preventDefault(); e.stopPropagation();
+  pan = { x: e.clientX, y: e.clientY, sl: scroller.scrollLeft, st: scroller.scrollTop, id: e.pointerId };
+  try { scroller.setPointerCapture(e.pointerId); } catch {}
+  setHand();
+}, true);
+scroller.addEventListener('pointermove', e => {
+  if (!pan || e.pointerId !== pan.id) return;
+  scroller.scrollLeft = pan.sl - (e.clientX - pan.x);
+  scroller.scrollTop = pan.st - (e.clientY - pan.y);
+});
+const endPan = e => { if (pan && e.pointerId === pan.id) { pan = null; setHand(); } };
+scroller.addEventListener('pointerup', endPan);
+scroller.addEventListener('pointercancel', endPan);
+// a click that ends a pan must not open the task editor
+scroller.addEventListener('click', e => { if (spaceDown) { e.stopPropagation(); e.preventDefault(); } }, true);
+scroller.addEventListener('auxclick', e => { if (e.button === 1) e.preventDefault(); });
 $('#btnToday').addEventListener('click', () => scrollToDay(todayN(), .3));
 $('#btnAdd').addEventListener('click', () => addTask('task'));
 $('#btnUndo').addEventListener('click', undo);
