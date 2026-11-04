@@ -1,0 +1,17 @@
+{
+  "name": "Gantt",
+  "short_name": "Gantt",
+  "description": "Diagramas de Gantt con fases, hitos y dependencias, sincronizados con Google Drive.",
+  "lang": "es",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f5f5f2",
+  "theme_color": "#3b4fd8",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
